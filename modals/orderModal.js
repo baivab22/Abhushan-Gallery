@@ -93,8 +93,13 @@ giftBoxCharge:Number,
       isInsideValley: Boolean,
   
 
+  // Public order reference. New orders receive a server-generated 5-digit
+  // numeric string (e.g. "00017") so leading zeros are preserved. The unique
+  // index is the authority that prevents two orders sharing an ID; creation
+  // retries on duplicate-key errors. Legacy orders keep their original IDs.
   productOrderId: {
     type: String,
+    trim: true,
     unique: true,
     index: true,
   },

@@ -12,7 +12,9 @@
     "verify:invoice-email": "node scripts/verify-confirmed-email-attachment.js",
     "test:analytics": "node scripts/test-analytics-time.js",
     "verify:analytics": "node scripts/verify-analytics-pipeline.js",
-    "verify:single-page": "node scripts/verify-single-page-visit.js"
+    "verify:single-page": "node scripts/verify-single-page-visit.js",
+    "verify:order-id": "node scripts/verify-order-id.js",
+    "verify:order-id-db": "node scripts/verify-order-id-db.js"
   },
   "keywords": [],
   "author": "",

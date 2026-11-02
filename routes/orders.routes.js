@@ -1,6 +1,7 @@
 const express = require("express");
 const {
   createOrder,
+  generateOrderId,
   deleteSpecificCartOrder,
   updateOrderedProduct,
   getOrderedProductList,
@@ -37,6 +38,9 @@ router.patch("/order/out-of-stock/bulk-stock", bulkUpdateOutOfStock);
 router.post("/order/increase-stock-all", increaseStockForAllProducts);
 
 router.post("/order/new/:userId", handlePaymentScreenshotUpload, createOrder);
+// Registered before the generic /order routes so Express treats it as a
+// dedicated endpoint rather than an order identifier.
+router.get("/order/generate-id", generateOrderId);
 router.get("/order", getOrderedProductList);
 router.get('/order/user/:userId', getOrdersByUser);
 router.get("/order/user/:userId/chat-summary", getUserOrderChatSummary);
