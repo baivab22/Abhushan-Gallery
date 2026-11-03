@@ -1,8 +1,5 @@
 const Cart = require("../modals/cart.modal"); 
 const { Product } = require("../modals/product.modal");
-const {
-  subscribeUserToRestock,
-} = require("../services/restockNotification.service");
 
 const getRequestedQuantity = (value) => Math.max(1, Number(value || 1));
 
@@ -11,16 +8,10 @@ const getAvailableStock = async (productId) => {
   return Number(product?.stockQuantity || 0);
 };
 
-// When a user attempts to add a fully out-of-stock product, silently register
-// them for a one-time back-in-stock email. Never blocks the cart response.
-const maybeSubscribeOutOfStockInterest = async (userId, productId) => {
-  if (!userId || !productId) return;
-  try {
-    await subscribeUserToRestock({ userId, productId });
-  } catch (err) {
-    console.error('[Restock] Failed to register interest:', err.message);
-  }
-};
+// Restock alerts are opt-in: only the explicit "Notify Me" action (cart or
+// product page) creates a subscription. Adding/updating a cart item must never
+// silently subscribe the shopper, otherwise people receive email they never
+// asked for.
 
 exports.createCart = async (req, res) => {
   try {
@@ -34,9 +25,6 @@ exports.createCart = async (req, res) => {
       const quantity = getRequestedQuantity(item?.quantity);
       const stockQuantity = await getAvailableStock(productId);
       if (quantity > stockQuantity) {
-        if (stockQuantity === 0) {
-          maybeSubscribeOutOfStockInterest(req.body.userId, productId);
-        }
         return res.status(400).json({
           message: `Only ${stockQuantity} items available in stock`,
         });
@@ -106,9 +94,6 @@ exports.updateCartProduct = async (req, res) => {
         const requestedQuantity = getRequestedQuantity(quantity);
 
         if (requestedQuantity > stockQuantity) {
-          if (stockQuantity === 0) {
-            maybeSubscribeOutOfStockInterest(userId, productId);
-          }
           return res.status(400).json({
             message: `Only ${stockQuantity} items available in stock`,
           });
