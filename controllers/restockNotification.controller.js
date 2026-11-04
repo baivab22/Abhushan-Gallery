@@ -21,9 +21,21 @@ exports.subscribe = async (req, res) => {
     });
 
     if (!result.subscribed) {
-      return res.status(400).json({
-        message:
+      const messages = {
+        INVALID_REQUEST: "A valid product is required.",
+        PRODUCT_NOT_FOUND:
           "Unable to register for restock notification. Product may no longer exist.",
+        USER_NOT_FOUND: "Your account could not be found. Please log in again.",
+        USER_INACTIVE:
+          "Your account is not active. Please contact support to enable alerts.",
+        EMAIL_MISSING:
+          "Your account has no email address. Please add one before requesting an alert.",
+      };
+      return res.status(400).json({
+        data: result,
+        message:
+          messages[result.reason] ||
+          "Unable to register for restock notification. Please try again.",
       });
     }
 

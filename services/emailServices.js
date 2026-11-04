@@ -961,7 +961,11 @@ const sendRestockAvailableEmail = async (recipientEmail, product) => {
   const firstImage = product.images?.find((img) => img?.coloredImages?.length)
     ?.coloredImages?.[0];
   const imageUrl = buildProductImageUrl(firstImage);
-  const productUrl = buildProductPageUrl(product._id);
+  const productId = product._id || product.id;
+  if (!productId) {
+    throw new Error('Cannot build restock email without a product id');
+  }
+  const productUrl = buildProductPageUrl(productId);
 
   const subject = `Back in stock: ${product.name || 'Your awaited item'}`;
 
@@ -1004,7 +1008,7 @@ ${buildFooterText()}`;
     subject,
   });
 
-  await transporter.sendMail({
+  const info = await transporter.sendMail({
     from: `"Abhushan Gallery" <${EMAIL_CONFIG.sender}>`,
     to: recipientEmail,
     subject,
@@ -1021,6 +1025,27 @@ ${buildFooterText()}`;
     attachments: getLogoAttachment(),
     replyTo: EMAIL_CONFIG.sender,
   });
+
+  // Nodemailer resolves even when the SMTP server rejects the recipient. Treat
+  // that as a failure so the worker can retry instead of marking it "sent".
+  const rejected = Array.isArray(info?.rejected) ? info.rejected : [];
+  const accepted = Array.isArray(info?.accepted) ? info.accepted : [];
+  const normalizedRecipient = String(recipientEmail || '')
+    .trim()
+    .toLowerCase();
+  const normalizeAddress = (value) =>
+    String(value || '').trim().toLowerCase();
+  const wasRejected =
+    rejected.some((value) => normalizeAddress(value) === normalizedRecipient) ||
+    (accepted.length > 0 &&
+      !accepted.some(
+        (value) => normalizeAddress(value) === normalizedRecipient
+      ));
+  if (wasRejected) {
+    throw new Error(
+      `SMTP rejected restock recipient ${recipientEmail}`
+    );
+  }
 
   console.log(`[Restock] Back-in-stock email sent to ${recipientEmail}`);
   return true;

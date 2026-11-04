@@ -725,91 +725,232 @@ exports.logoutUser = async (req, res) => {
   }
 };
 
-exports.forgotPassword = async (req, res) => {
-  const { email } = req.body;
+// ---------------------------------------------------------------------------
+// Password reset helpers
+// ---------------------------------------------------------------------------
 
-  if (!email) return res.status(400).json({ message: "Email is required" });
+// How long a reset link stays valid. Configurable so ops can tune it without
+// touching code, but always clamped to a sane range.
+const PASSWORD_RESET_TTL_MINUTES = (() => {
+  const configured = Number(process.env.PASSWORD_RESET_TTL_MINUTES);
+  if (!Number.isFinite(configured)) return 60;
+  return Math.min(Math.max(configured, 5), 24 * 60);
+})();
+const PASSWORD_RESET_TTL_MS = PASSWORD_RESET_TTL_MINUTES * 60 * 1000;
+const MIN_PASSWORD_LENGTH = 8;
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const normalizeEmail = (value) => String(value || "").trim().toLowerCase();
+
+// Tokens are stored hashed so a database leak cannot be used to reset
+// passwords. Reset still accepts legacy plain-text tokens for links that were
+// issued before this change was deployed.
+const hashResetToken = (token) =>
+  crypto.createHash("sha256").update(String(token)).digest("hex");
+
+/**
+ * Builds a URL that works with the storefront's HashRouter:
+ *   https://example.com/#/reset-password?resetToken=<token>
+ */
+const buildResetLink = (token) => {
+  const base = getPublicSiteUrl();
+  const resetPath = `/reset-password?resetToken=${encodeURIComponent(token)}`;
+
+  try {
+    const url = new URL(base);
+    url.hash = resetPath;
+    return url.toString();
+  } catch {
+    return `${base}/#${resetPath}`;
+  }
+};
+
+exports.forgotPassword = async (req, res) => {
+  const email = normalizeEmail(req.body && req.body.email);
+
+  if (!email) {
+    return res.status(400).json({
+      success: false,
+      message: "Email is required",
+    });
+  }
+
+  if (!EMAIL_PATTERN.test(email)) {
+    return res.status(400).json({
+      success: false,
+      message: "Please enter a valid email address",
+    });
+  }
+
+  // Never reveal whether an account exists. This prevents attackers from
+  // using the endpoint to enumerate registered emails.
+  const publicResponse = {
+    success: true,
+    message:
+      "If an account exists with that email, a password reset link has been sent.",
+  };
 
   try {
     const user = await User.findOne({ email });
-    if (!user) return res.status(404).json({ message: "User not found" });
 
-    // Generate reset token
+    if (!user) {
+      return res.json(publicResponse);
+    }
+
     const resetToken = crypto.randomBytes(32).toString("hex");
+    const hashedToken = hashResetToken(resetToken);
+    const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_MS);
 
-    // Save token & expiry
-    user.resetPasswordToken = resetToken;
-    user.resetPasswordExpires = Date.now() + 15 * 60 * 1000; // 15 minutes
-    await user.save();
+    // Overwrites any previous token, so requesting a new link invalidates the
+    // previous one immediately.
+    await User.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          resetPasswordToken: hashedToken,
+          resetPasswordExpires: expiresAt,
+        },
+      }
+    );
 
-    // Public storefront URL — shared helper, never localhost (see mailConfig)
-    const frontendURL = getPublicSiteUrl();
+    const resetLink = buildResetLink(resetToken);
 
-    // Build hash route reset link
-    const resetLink = `${frontendURL}/#/reset-password?resetToken=${resetToken}`;
+    try {
+      await transporter.sendMail({
+        from: EMAIL_CONFIG.sender,
+        to: user.email,
+        subject: "Password Reset Request",
+        html: buildEmailShell({
+          subject: "Password Reset Request",
+          title: "Password Reset Request",
+          subtitle: "Secure account access",
+          bodyHtml: `
+            <p>We received a request to reset your password.</p>
+            <p>Click the secure link below to create a new password:</p>
+            <p style="margin: 14px 0; word-break: break-all;">
+              <a href="${resetLink}" style="color:#2563eb; text-decoration:none;">${resetLink}</a>
+            </p>
+            <p>This link will expire in ${PASSWORD_RESET_TTL_MINUTES} minutes.</p>
+            <p>If you did not request this, you can safely ignore this email.</p>
+          `,
+          footerNote: "For your security, this link expires automatically.",
+          contactPhone: "9861698400",
+          contactEmail: EMAIL_CONFIG.sender,
+        }),
+        attachments: getLogoAttachment(),
+      });
+    } catch (mailError) {
+      // The link was never delivered, so do not leave a dead token behind.
+      await User.updateOne(
+        { _id: user._id },
+        { $unset: { resetPasswordToken: 1, resetPasswordExpires: 1 } }
+      );
 
-    // Send email
-    await transporter.sendMail({
-      from: EMAIL_CONFIG.sender,
-      to: user.email,
-      subject: "Password Reset Request",
-      html: buildEmailShell({
-        subject: 'Password Reset Request',
-        title: 'Password Reset Request',
-        subtitle: 'Secure account access',
-        bodyHtml: `
-          <p>We received a request to reset your password.</p>
-          <p>Click the secure link below to create a new password:</p>
-          <p style="margin: 14px 0; word-break: break-all;">
-            <a href="${resetLink}" style="color:#2563eb; text-decoration:none;">${resetLink}</a>
-          </p>
-          <p>This link will expire in 15 minutes.</p>
-          <p>If you did not request this, you can ignore this email.</p>
-        `,
-        footerNote: 'For your security, this link expires automatically.',
-        contactPhone: '9861698400',
-        contactEmail: EMAIL_CONFIG.sender,
-      }),
-      attachments: getLogoAttachment(),
-    });
+      console.error("Forgot password email error:", mailError);
+      return res.status(500).json({
+        success: false,
+        message: "We could not send the reset email. Please try again.",
+      });
+    }
 
-    return res.json({ message: "Password reset link sent to email" });
+    return res.json(publicResponse);
   } catch (err) {
     console.error("Forgot password error:", err);
-    return res.status(500).json({ message: "Server error" });
+    return res.status(500).json({
+      success: false,
+      message: "Server error. Please try again.",
+    });
   }
 };
 
 exports.resetPassword = async (req, res) => {
-  const { resetToken, newPassword } = req.body;
+  const body = req.body || {};
 
-  if (!resetToken || !newPassword || newPassword.trim() === "") {
-    return res.status(400).json({ message: "Reset token and new password are required" });
+  // Accept a couple of aliases so old links/clients keep working.
+  const resetToken =
+    typeof body.resetToken === "string"
+      ? body.resetToken.trim()
+      : typeof body.token === "string"
+      ? body.token.trim()
+      : "";
+
+  const newPassword =
+    typeof body.newPassword === "string"
+      ? body.newPassword
+      : typeof body.password === "string"
+      ? body.password
+      : "";
+
+  if (!resetToken) {
+    return res.status(400).json({
+      success: false,
+      code: "RESET_TOKEN_MISSING",
+      message: "This password reset link is missing its token.",
+    });
+  }
+
+  if (!newPassword || newPassword.trim() === "") {
+    return res.status(400).json({
+      success: false,
+      code: "PASSWORD_REQUIRED",
+      message: "Please enter a new password.",
+    });
+  }
+
+  if (newPassword.length < MIN_PASSWORD_LENGTH) {
+    return res.status(400).json({
+      success: false,
+      code: "PASSWORD_TOO_SHORT",
+      message: `Password must be at least ${MIN_PASSWORD_LENGTH} characters long.`,
+    });
   }
 
   try {
+    const hashedToken = hashResetToken(resetToken);
+
+    // `$or` supports both hashed tokens (new flow) and plain tokens issued by
+    // older deployments, so links that are already in inboxes still work.
+    const tokenQuery = {
+      $or: [
+        { resetPasswordToken: hashedToken },
+        { resetPasswordToken: resetToken },
+      ],
+    };
+
     const user = await User.findOne({
-      resetPasswordToken: resetToken,
-      resetPasswordExpires: { $gt: Date.now() },
+      ...tokenQuery,
+      resetPasswordExpires: { $gt: new Date() },
     });
 
     if (!user) {
-      return res.status(400).json({ message: "Invalid or expired reset token" });
+      // Give the user an actionable message instead of a bare 400.
+      const expiredOwner = await User.findOne(tokenQuery).select("_id").lean();
+
+      return res.status(400).json({
+        success: false,
+        code: expiredOwner ? "RESET_TOKEN_EXPIRED" : "RESET_TOKEN_INVALID",
+        message: expiredOwner
+          ? "This password reset link has expired. Please request a new one."
+          : "This password reset link is invalid. Please request a new one.",
+      });
     }
 
-    // Hash new password
     user.password = await bcrypt.hash(newPassword, 10);
-
-    // Clear reset token fields
     user.resetPasswordToken = undefined;
     user.resetPasswordExpires = undefined;
 
     await user.save();
 
-    return res.json({ message: "Password updated successfully" });
+    return res.json({
+      success: true,
+      message: "Password updated successfully. You can now sign in.",
+    });
   } catch (err) {
     console.error("Reset password error:", err);
-    return res.status(500).json({ message: "Server error" });
+    return res.status(500).json({
+      success: false,
+      message: "Server error. Please try again.",
+    });
   }
 };
 

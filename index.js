@@ -29,6 +29,9 @@ const messagingRouter = require('./routes/messagingRoutes');
 const restockNotificationRouter = require('./routes/restockNotification.routes');
 const visitorAnalyticsRouter = require('./routes/visitorAnalytics.routes');
 const { startHolidayModeSchedulers } = require('./schedulers/holidayMode.scheduler');
+const {
+  startRestockNotificationWorker,
+} = require('./workers/restockNotification.worker');
 
 console.log(`Server starting on port ${PORT}...`);
 
@@ -141,6 +144,9 @@ app.get("*", (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server initialized successfully on port ${PORT}`);
   startHolidayModeSchedulers();
+  // Safety net for pending back-in-stock alerts (missed trigger, crash, SMTP
+  // hiccup). The immediate notification on a stock update still runs first.
+  startRestockNotificationWorker();
 });
 
 
