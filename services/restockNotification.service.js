@@ -33,8 +33,30 @@ const RETRY_MAX_MS = toPositiveInt(
 );
 const WORKER_BATCH = toPositiveInt(process.env.RESTOCK_WORKER_BATCH, 50);
 
+// The restock cycle starts when a product leaves "out of stock" (<= 0) and
+// becomes sellable again. By default ANY positive quantity is enough (0 -> 1
+// must notify). Set RESTOCK_NOTIFY_MIN_STOCK=2 if the store wants to wait for
+// more than one unit before emailing.
+const MIN_STOCK_FOR_RESTOCK = toPositiveInt(
+  process.env.RESTOCK_NOTIFY_MIN_STOCK,
+  1
+);
+
 const isValidId = (value) =>
   Boolean(value) && mongoose.isValidObjectId(String(value));
+
+/**
+ * True when a stock change crosses out of "not sellable" into "sellable".
+ * A missing/corrupt previous value is treated as out of stock rather than
+ * silently skipping the alert.
+ */
+const didRestock = (previousStockQuantity, nextStockQuantity) => {
+  const next = Number(nextStockQuantity);
+  if (!Number.isFinite(next) || next < MIN_STOCK_FOR_RESTOCK) return false;
+
+  const previous = Number(previousStockQuantity);
+  return !Number.isFinite(previous) || previous <= 0;
+};
 
 const getRetryDelayMs = (attempts) => {
   const exponent = Math.max(0, Number(attempts) - 1);
@@ -174,7 +196,7 @@ const notifySubscribersOfRestock = async (productId) => {
   }
 
   const currentStock = Number(product.stockQuantity ?? 0);
-  if (!Number.isFinite(currentStock) || currentStock <= 0) {
+  if (!Number.isFinite(currentStock) || currentStock < MIN_STOCK_FOR_RESTOCK) {
     return { skipped: "OUT_OF_STOCK", notified: 0, failed: 0 };
   }
 
@@ -307,7 +329,7 @@ const processDueRestockNotifications = async ({
 
   const inStockProducts = await Product.find({
     _id: { $in: productIds },
-    stockQuantity: { $gt: 0 },
+    stockQuantity: { $gte: MIN_STOCK_FOR_RESTOCK },
   })
     .select("_id")
     .lean();
@@ -345,4 +367,5 @@ module.exports = {
   cancelRestockSubscription,
   notifySubscribersOfRestock,
   processDueRestockNotifications,
+  didRestock,
 };

@@ -8,6 +8,7 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node index.js",
     "verify:confirm-bulk": "node scripts/verify-confirm-bulk.js",
+    "verify:restock": "node scripts/verify-restock-notification.js",
     "verify:invoice-pdf": "node scripts/verify-invoice-pdf.js",
     "verify:invoice-email": "node scripts/verify-confirmed-email-attachment.js",
     "test:analytics": "node scripts/test-analytics-time.js",

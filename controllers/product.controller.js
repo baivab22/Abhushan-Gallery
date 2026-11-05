@@ -9,6 +9,7 @@ const fs = require("fs");
 const path = require("path");
 const {
   notifySubscribersOfRestock,
+  didRestock,
 } = require("../services/restockNotification.service");
 
 const getUploadedFiles = (files, fieldName) => {
@@ -1434,7 +1435,7 @@ exports.updateProduct = async (req, res, next) => {
 
     // Restock event: the product just came back from out-of-stock → notify
     // everyone who asked to be emailed when it returns (non-blocking).
-    if (previousStockQuantity <= 0 && Number(product.stockQuantity) > 0) {
+    if (didRestock(previousStockQuantity, product.stockQuantity)) {
       notifySubscribersOfRestock(product._id).catch((err) =>
         console.error("[Restock] Notification run failed:", err?.message || err)
       );

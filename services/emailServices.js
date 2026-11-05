@@ -958,8 +958,17 @@ const getProductDisplayPrice = (product) => {
 const sendRestockAvailableEmail = async (recipientEmail, product) => {
   const productName = escapeHtml(product.name || 'A product you liked');
   const displayPrice = getProductDisplayPrice(product);
-  const firstImage = product.images?.find((img) => img?.coloredImages?.length)
-    ?.coloredImages?.[0];
+  // Support both the current `coloredImages` array and the legacy single
+  // `coloredImage` field so older products still render an image in the email.
+  const imageVariants = Array.isArray(product.images) ? product.images : [];
+  const firstImage = imageVariants
+    .flatMap((img) => {
+      if (typeof img === "string") return [img];
+      if (Array.isArray(img?.coloredImages)) return img.coloredImages;
+      if (img?.coloredImage) return [img.coloredImage];
+      return [];
+    })
+    .find(Boolean);
   const imageUrl = buildProductImageUrl(firstImage);
   const productId = product._id || product.id;
   if (!productId) {
