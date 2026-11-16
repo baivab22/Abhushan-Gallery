@@ -1,6 +1,7 @@
 require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
 const { transporter, EMAIL_CONFIG, buildCommonHeaders } = require("./mailConfig");
 const { getLogoAttachment, buildEmailShell } = require('./emailTemplate');
+const { buildInvoiceAttachment } = require('./emailServices');
 
 const formatCurrency = (value) => {
   const amount = Number(value) || 0;
@@ -266,6 +267,25 @@ const sendOrderDeliveryStatusChangedNotification = async (order, statusChange = 
   const currentTotal = formatCurrency(order?.totalAmount);
 
   const emailSubject = `Delivery Update: Order ${orderId} - ${newStatus}`;
+
+  // Every status change carries the same PDF invoice as the confirmed-order
+  // mail, so the customer always has an up-to-date document for the order
+  // (including when an admin moves it to shipped/delivered from the dashboard).
+  const invoiceAttachment = await buildInvoiceAttachment({
+    order,
+    customerEmail,
+    customerName,
+    senderEmail: EMAIL_CONFIG.sender,
+    title: `Order Invoice - ${newStatus}`,
+  });
+
+  const invoiceNoteHtml = invoiceAttachment
+    ? '<p style="font-size:14px;line-height:1.6;margin:16px 0;">We have attached your order invoice to this email for your records.</p>'
+    : '';
+  const invoiceNoteText = invoiceAttachment
+    ? 'We have attached your order invoice to this email for your records.\n'
+    : '';
+
   const emailBody = `
     <p>Dear ${customerName},</p>
     <p>Your delivery status has been updated.</p>
@@ -278,6 +298,7 @@ const sendOrderDeliveryStatusChangedNotification = async (order, statusChange = 
       <p style="margin:4px 0;font-size:14px;"><strong>Order Total:</strong> ${currentTotal}</p>
     </div>
 
+    ${invoiceNoteHtml}
     <p style="font-size:14px;line-height:1.6;">We will continue to share updates until your package is delivered.</p>
   `;
 
@@ -291,7 +312,7 @@ Current Status: ${newStatus}
 Status Time: ${statusTimeLabel}
 Order Total: ${currentTotal}
 
-We will continue to share updates until your package is delivered.
+${invoiceNoteText}We will continue to share updates until your package is delivered.
 Contact us at ${EMAIL_CONFIG.sender} if you have questions.`;
 
   const mailOptions = {
@@ -310,7 +331,9 @@ Contact us at ${EMAIL_CONFIG.sender} if you have questions.`;
     text: textBody,
     headers: buildCommonHeaders({ to: customerEmail, subject: emailSubject }),
     replyTo: EMAIL_CONFIG.sender,
-    attachments: getLogoAttachment(),
+    attachments: invoiceAttachment
+      ? [...getLogoAttachment(), invoiceAttachment]
+      : getLogoAttachment(),
   };
 
   await transporter.sendMail(mailOptions);
@@ -319,6 +342,7 @@ Contact us at ${EMAIL_CONFIG.sender} if you have questions.`;
     sent: true,
     skipped: false,
     recipientMode: 'customer-only',
+    invoiceAttached: Boolean(invoiceAttachment),
   };
 };
 
