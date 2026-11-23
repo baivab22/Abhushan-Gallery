@@ -1431,6 +1431,34 @@ exports.updateProduct = async (req, res, next) => {
         ? req.body.isHotSelling === "true" || req.body.isHotSelling === true
         : product.isHotSelling;
 
+    // A product inside a live flash sale keeps its sale price. If an admin
+    // edits the price, treat the submitted value as the NEW pre-sale baseline
+    // and recompute the sale price rather than letting the edit overwrite the
+    // campaign (or silently stack another discount).
+    if (product.flashSale?.campaignId && product.flashSale?.salePrice != null) {
+      const flashPercentage = Number(product.flashSale.discountPercentage) || 0;
+      const submittedDiscounted =
+        req.body.discountedPrice !== undefined ? Number(req.body.discountedPrice) : null;
+      const previousDiscounted = Number(product.flashSale.previousDiscountedPrice);
+      const baseline =
+        submittedDiscounted !== null && Number.isFinite(submittedDiscounted) && submittedDiscounted > 0
+          ? submittedDiscounted
+          : Number.isFinite(previousDiscounted) && previousDiscounted > 0
+            ? previousDiscounted
+            : Number(product.discountedPrice) || 0;
+
+      if (flashPercentage > 0 && baseline > 0) {
+        const salePrice =
+          Math.round((baseline - (baseline * flashPercentage) / 100) * 100) / 100;
+        const original = Number(product.originalPrice);
+        product.flashSale.previousDiscountedPrice = baseline;
+        product.flashSale.salePrice = salePrice;
+        product.discountedPrice = salePrice;
+        product.discountPercentage =
+          original > 0 ? Math.round(((original - salePrice) / original) * 100) : flashPercentage;
+      }
+    }
+
     await product.save();
 
     // Restock event: the product just came back from out-of-stock → notify

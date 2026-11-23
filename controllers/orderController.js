@@ -3,6 +3,11 @@ const Orders = require("../modals/orderModal");
 const User = require("../modals/userModal");
 const { Product } = require("../modals/product.modal");
 const Coupon = require("../modals/coupon.modal");
+const FlashSale = require("../modals/flashSale.modal");
+const {
+  getEffectiveUnitPrice,
+  roundMoney,
+} = require("../services/flashSale.service");
 const {
   getPaymentScreenshotFile,
   getPaymentScreenshotPath,
@@ -45,6 +50,68 @@ class OrderRequestError extends Error {
 const PHONE_PAY = 'phonePay';
 const CASH_ON_DELIVERY = 'cashOnDelivery';
 const ORDER_PAYLOAD_FIELD = 'orderData';
+
+// Resolve every line item against the database instead of trusting the price
+// snapshot submitted by the browser. Flash-sale prices live on the product
+// document, so this also guarantees an expired/deactivated campaign can no
+// longer be honoured at checkout.
+const resolveAuthoritativeOrderProducts = async (orderProducts, session) => {
+  const normalized = (orderProducts || []).map((item) => {
+    const quantity = Number(item?.quantity);
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      throw new OrderRequestError(400, 'Each order item needs a quantity of at least 1.');
+    }
+    if (!item?.productId || !mongoose.Types.ObjectId.isValid(String(item.productId))) {
+      throw new OrderRequestError(400, 'A valid product is required for every order item.');
+    }
+    return {...item, quantity};
+  });
+
+  let productsQuery = Product.find({
+    _id: {$in: normalized.map((item) => item.productId)},
+  }).select('price originalPrice discountedPrice flashSale');
+  if (session) productsQuery = productsQuery.session(session);
+  const products = await productsQuery;
+  const productById = new Map(products.map((product) => [String(product._id), product]));
+
+  const campaignIds = [
+    ...new Set(
+      products
+        .map((product) => product.flashSale?.campaignId)
+        .filter(Boolean)
+        .map(String)
+    ),
+  ];
+  let campaigns = [];
+  if (campaignIds.length) {
+    let campaignQuery = FlashSale.find({_id: {$in: campaignIds}}).select('allowCouponStacking');
+    if (session) campaignQuery = campaignQuery.session(session);
+    campaigns = await campaignQuery;
+  }
+  const stackingBlocked = campaigns.some((campaign) => campaign.allowCouponStacking === false);
+
+  const pricedProducts = normalized.map((item) => {
+    const product = productById.get(String(item.productId));
+    if (!product) {
+      throw new OrderRequestError(400, `Product ${item.productId} is no longer available.`);
+    }
+
+    const unitPrice = getEffectiveUnitPrice(product);
+    if (unitPrice <= 0) {
+      throw new OrderRequestError(400, `Product ${product.name || item.productId} has no valid price.`);
+    }
+
+    return {
+      ...item,
+      // products[].price is the LINE TOTAL throughout the order pipeline.
+      price: roundMoney(unitPrice * item.quantity),
+      unitPrice,
+      flashSaleCampaignId: product.flashSale?.campaignId || undefined,
+    };
+  });
+
+  return {products: pricedProducts, stackingBlocked};
+};
 
 // Runs after the HTTP response has already been sent.
 //
@@ -416,13 +483,24 @@ exports.createOrder = async (req, res) => {
     const attemptOutOfStockProducts = [];
 
     try {
+      // Resolve line totals server-side: this enforces active flash-sale prices
+      // and ignores any price the browser tried to submit.
+      const {products: authoritativeProducts, stackingBlocked} =
+        await resolveAuthoritativeOrderProducts(orderProducts, session);
+
       // Coupon validation — always enforced server-side against the line-item subtotal
       let appliedCoupon = null;
       let couponDiscount = 0;
       const rawCouponCode = normalizeCouponCode(orderBody.couponCode);
       if (rawCouponCode) {
-        // NOTE: products[].price is the LINE TOTAL (unit price × quantity) sent by the client
-        const couponSubtotal = orderProducts
+        if (stackingBlocked) {
+          throw new OrderRequestError(
+            400,
+            'Coupon codes cannot be combined with this flash sale.'
+          );
+        }
+        // NOTE: products[].price is the LINE TOTAL (unit price × quantity)
+        const couponSubtotal = authoritativeProducts
           .reduce((sum, item) => sum + (Number(item?.price) || 0), 0);
         const couponResult = await validateCouponForOrder(rawCouponCode, couponSubtotal, orderBody.userId);
         if (!couponResult.ok) {
@@ -433,7 +511,7 @@ exports.createOrder = async (req, res) => {
       }
 
       // Atomic stock decrement — prevents race conditions
-      for (const product of orderProducts) {
+      for (const product of authoritativeProducts) {
         const { productId, quantity } = product;
 
         const result = await Product.findOneAndUpdate(
@@ -465,7 +543,7 @@ exports.createOrder = async (req, res) => {
         fullName: orderBody.fullName,
         name: normalizedName || undefined,
         isGuestCheckout: orderBody.isGuestCheckout,
-        products: orderProducts,
+        products: authoritativeProducts,
         giftBoxCharge: orderBody.giftBoxCharge,
         isRedZone: orderBody.isRedZone,
         includeGiftBox: orderBody.includeGiftBox,
@@ -479,10 +557,10 @@ exports.createOrder = async (req, res) => {
         isInsideValley: orderBody.isInsideValley,
         productOrderId: orderIdForAttempt,
         shippingPrice: orderBody.shippingPrice,
-        // Recomputed server-side — never trust the client-sent totalAmount.
-        // products[].price is the LINE TOTAL (unit price × quantity) sent by the client.
+        // Recomputed server-side — never trust the client-sent totalAmount or
+        // line prices. authoritativeProducts already includes any active sale.
         totalAmount:
-          orderProducts.reduce((sum, item) => sum + (Number(item?.price) || 0), 0) +
+          authoritativeProducts.reduce((sum, item) => sum + (Number(item?.price) || 0), 0) +
           (Number(orderBody.shippingPrice) || 0) +
           (Number(orderBody.giftBoxCharge) || 0) -
           couponDiscount,

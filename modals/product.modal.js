@@ -115,6 +115,44 @@ const productSchema = new mongoose.Schema(
     outOfStockNotificationSent: {
       type: Boolean,
       default: false
+    },
+
+    // Active flash-sale metadata. `discountedPrice` temporarily holds the sale
+    // price while the previous values are kept here for restoration on expiry.
+    flashSale: {
+      campaignId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "FlashSale",
+        default: null,
+      },
+      discountPercentage: {
+        type: Number,
+        default: null,
+      },
+      salePrice: {
+        type: Number,
+        default: null,
+      },
+      previousDiscountedPrice: {
+        type: Number,
+        default: null,
+      },
+      previousDiscountPercentage: {
+        type: Number,
+        default: null,
+      },
+      startsAt: {
+        type: Date,
+        default: null,
+      },
+      endsAt: {
+        type: Date,
+        default: null,
+      },
+      appliedAt: {
+        type: Date,
+        default: null,
+      },
     }
   },
   {

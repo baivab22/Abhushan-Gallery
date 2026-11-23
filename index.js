@@ -23,12 +23,14 @@ const socialItemRouter = require("./routes/socialItem.routes");
 const holidayModeRouter = require("./routes/holidayMode.routes");
 const reviewRouter = require("./routes/reviewRoutes");
 const couponRouter = require("./routes/couponRoutes");
+const flashSaleRouter = require("./routes/flashSale.routes");
 const featureRouter = require("./routes/featureRoutes");
 const emailMarketingRoutes = require('./routes/emailMarketingRoutes');
 const messagingRouter = require('./routes/messagingRoutes');
 const restockNotificationRouter = require('./routes/restockNotification.routes');
 const visitorAnalyticsRouter = require('./routes/visitorAnalytics.routes');
 const { startHolidayModeSchedulers } = require('./schedulers/holidayMode.scheduler');
+const { startFlashSaleSchedulers } = require('./schedulers/flashSale.scheduler');
 const {
   startRestockNotificationWorker,
 } = require('./workers/restockNotification.worker');
@@ -97,6 +99,7 @@ app.use("/api", socialItemRouter);
 app.use("/api", holidayModeRouter);
 app.use("/api", reviewRouter);
 app.use("/api", couponRouter);
+app.use("/api", flashSaleRouter);
 app.use("/api", featureRouter);
 app.use('/api/email', emailMarketingRoutes);
 
@@ -144,6 +147,8 @@ app.get("*", (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server initialized successfully on port ${PORT}`);
   startHolidayModeSchedulers();
+  // Auto-start scheduled sales and restore prices when a campaign expires.
+  startFlashSaleSchedulers();
   // Safety net for pending back-in-stock alerts (missed trigger, crash, SMTP
   // hiccup). The immediate notification on a stock update still runs first.
   startRestockNotificationWorker();
