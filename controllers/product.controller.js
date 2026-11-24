@@ -11,6 +11,21 @@ const {
   notifySubscribersOfRestock,
   didRestock,
 } = require("../services/restockNotification.service");
+const {syncDueFlashSales} = require("../services/flashSale.service");
+const {
+  queueProductForIndexing,
+  removeProductFromIndex,
+} = require("../services/visualSearch/indexer.service");
+
+// Product reads must never return an expired flash sale price. The sync only
+// touches campaigns whose window has elapsed, so this is a cheap guard.
+const syncFlashSalesForReads = async () => {
+  try {
+    await syncDueFlashSales();
+  } catch (error) {
+    console.error("[FlashSale] Read-time sync failed:", error?.message || error);
+  }
+};
 
 const getUploadedFiles = (files, fieldName) => {
   if (!files) return [];
@@ -236,7 +251,10 @@ exports.createProduct = async (req, res, next) => {
       });
 
       const savedProduct = await newProduct.save();
-      
+
+      // Visual search embeddings are generated asynchronously by the worker.
+      queueProductForIndexing(savedProduct._id, { reason: 'product created' });
+
       console.log(`✅ Product created successfully with ${images.length} image variant(s):`, savedProduct._id);
       
       res.status(201).json({
@@ -602,6 +620,8 @@ exports.createProduct = async (req, res, next) => {
 
 
 exports.getAllProduct = async (req, res, next) => {
+  await syncFlashSalesForReads();
+
   const {
     search,
     sort,
@@ -868,6 +888,11 @@ exports.deleteProduct = async (req, res, next) => {
 
     const deleteProductData = await Product.findByIdAndDelete(req.params.productId);
 
+    // Remove stored embeddings and any queued work for the deleted product.
+    removeProductFromIndex(req.params.productId).catch((err) =>
+      console.error('[visual-search] cleanup after product delete failed:', err.message)
+    );
+
     res.status(200).json({
       message: "Product deleted successfully",
       data: deleteProductData,
@@ -1032,6 +1057,11 @@ exports.deleteProductImages = async (req, res, next) => {
 
     await product.save();
 
+    queueProductForIndexing(productId, {
+      reason: 'product image deleted',
+      force: true,
+    });
+
     res.status(200).json({ 
       message: "Image deleted successfully",
       data: {
@@ -1056,6 +1086,9 @@ exports.updateProduct = async (req, res, next) => {
     if (!product) {
       return res.status(404).json({ error: "Product not found" });
     }
+
+    // Remember the live sale price before request values overwrite the model.
+    const salePriceBeforeEdit = product.discountedPrice;
 
     // ✅ VALIDATION: Check numeric fields
     if (req.body.price !== undefined && isNaN(parseFloat(req.body.price))) {
@@ -1437,20 +1470,58 @@ exports.updateProduct = async (req, res, next) => {
     // campaign (or silently stack another discount).
     if (product.flashSale?.campaignId && product.flashSale?.salePrice != null) {
       const flashPercentage = Number(product.flashSale.discountPercentage) || 0;
+      const salePriceBefore =
+        salePriceBeforeEdit !== null && salePriceBeforeEdit !== undefined
+          ? Number(salePriceBeforeEdit)
+          : null;
       const submittedDiscounted =
         req.body.discountedPrice !== undefined ? Number(req.body.discountedPrice) : null;
-      const previousDiscounted = Number(product.flashSale.previousDiscountedPrice);
-      const baseline =
-        submittedDiscounted !== null && Number.isFinite(submittedDiscounted) && submittedDiscounted > 0
-          ? submittedDiscounted
-          : Number.isFinite(previousDiscounted) && previousDiscounted > 0
-            ? previousDiscounted
-            : Number(product.discountedPrice) || 0;
+      const rawPrevious = product.flashSale.previousDiscountedPrice;
+      const previousDiscounted =
+        rawPrevious === null || rawPrevious === undefined ? null : Number(rawPrevious);
+
+      // When the admin form posts the currently visible sale price back to us,
+      // it is not a price change. Only a genuinely different submitted value is
+      // a new pre-sale baseline; otherwise stacking the campaign twice would
+      // happen every time any product field is edited during a sale.
+      const submittedIsUnchanged =
+        submittedDiscounted !== null &&
+        Number.isFinite(submittedDiscounted) &&
+        salePriceBefore !== null &&
+        Number.isFinite(salePriceBefore) &&
+        Math.abs(submittedDiscounted - salePriceBefore) < 0.01;
+
+      const submittedIsValid =
+        submittedDiscounted !== null &&
+        Number.isFinite(submittedDiscounted) &&
+        submittedDiscounted > 0 &&
+        !submittedIsUnchanged;
+
+      const previousIsValid =
+        previousDiscounted !== null &&
+        Number.isFinite(previousDiscounted) &&
+        previousDiscounted > 0;
+
+      const original = Number(product.originalPrice);
+      const listedPrice = Number(product.price);
+      const fallbackBaseline =
+        original > 0
+          ? original
+          : listedPrice > 0
+            ? listedPrice
+            : salePriceBefore !== null && Number.isFinite(salePriceBefore) && salePriceBefore > 0
+              ? salePriceBefore
+              : 0;
+
+      const baseline = submittedIsValid
+        ? submittedDiscounted
+        : previousIsValid
+          ? previousDiscounted
+          : fallbackBaseline;
 
       if (flashPercentage > 0 && baseline > 0) {
         const salePrice =
           Math.round((baseline - (baseline * flashPercentage) / 100) * 100) / 100;
-        const original = Number(product.originalPrice);
         product.flashSale.previousDiscountedPrice = baseline;
         product.flashSale.salePrice = salePrice;
         product.discountedPrice = salePrice;
@@ -1460,6 +1531,9 @@ exports.updateProduct = async (req, res, next) => {
     }
 
     await product.save();
+
+    // Re-embed changed images; unchanged images are skipped by hash comparison.
+    queueProductForIndexing(product._id, { reason: 'product updated' });
 
     // Restock event: the product just came back from out-of-stock → notify
     // everyone who asked to be emailed when it returns (non-blocking).
@@ -1486,6 +1560,8 @@ exports.updateProduct = async (req, res, next) => {
 
 exports.getProductDetailsById = async (req, res, next) => {
   try {
+    await syncFlashSalesForReads();
+
     const productId = req.params.productId;
     const productDetails = await Product.findById(productId)
       .populate("category")
@@ -1508,6 +1584,8 @@ exports.getProductDetailsById = async (req, res, next) => {
 
 exports.productListByCategory = async (req, res, next) => {
   try {
+    await syncFlashSalesForReads();
+
     const categoryId = req.params.categoryId;
     const productListByCategory = await Product.find({
       category: categoryId,
@@ -1604,6 +1682,10 @@ exports.CreateProductImage = async (req, res, next) => {
 
       // Save the updated product
       await product.save();
+      queueProductForIndexing(productId, {
+        reason: 'product images added',
+        force: true,
+      });
       console.log(`✅ Successfully added ${addedImages.length} product image(s) to product ${productId}`);
 
       res.status(201).json({
@@ -1737,6 +1819,14 @@ exports.deleteProductColorVariantImages = async (req, res, next) => {
       };
     }
 
+    const affectedProductIds = result.productsAffected || (productId ? [productId] : []);
+    for (const affectedId of affectedProductIds) {
+      queueProductForIndexing(affectedId, {
+        reason: 'product image variant deleted',
+        force: true,
+      });
+    }
+
     res.status(200).json(result);
   } catch (error) {
     console.error("Error deleting variant image:", error);
@@ -1780,6 +1870,8 @@ exports.getAllProductVariantImages = async (req, res, next) => {
 
 exports.getHotSellingProducts = async (req, res, next) => {
   try {
+    await syncFlashSalesForReads();
+
     const hotSellingProducts = await Product.find({ isHotSelling: true })
       .populate("category")
       .populate("subCategory")

@@ -29,11 +29,15 @@ const emailMarketingRoutes = require('./routes/emailMarketingRoutes');
 const messagingRouter = require('./routes/messagingRoutes');
 const restockNotificationRouter = require('./routes/restockNotification.routes');
 const visitorAnalyticsRouter = require('./routes/visitorAnalytics.routes');
+const visualSearchRouter = require('./routes/visualSearch.routes');
 const { startHolidayModeSchedulers } = require('./schedulers/holidayMode.scheduler');
 const { startFlashSaleSchedulers } = require('./schedulers/flashSale.scheduler');
 const {
   startRestockNotificationWorker,
 } = require('./workers/restockNotification.worker');
+const {
+  startVisualSearchIndexWorker,
+} = require('./workers/visualSearchIndex.worker');
 
 console.log(`Server starting on port ${PORT}...`);
 
@@ -106,6 +110,7 @@ app.use('/api/email', emailMarketingRoutes);
 app.use('/api', messagingRouter);
 app.use('/api', restockNotificationRouter);
 app.use('/api', visitorAnalyticsRouter);
+app.use('/api', visualSearchRouter);
 
 app.use('/api/scan', require('./routes/scanRoutes'));
 
@@ -152,6 +157,8 @@ app.listen(PORT, () => {
   // Safety net for pending back-in-stock alerts (missed trigger, crash, SMTP
   // hiccup). The immediate notification on a stock update still runs first.
   startRestockNotificationWorker();
+  // Gemini image embeddings are generated in small batches outside HTTP requests.
+  startVisualSearchIndexWorker();
 });
 
 

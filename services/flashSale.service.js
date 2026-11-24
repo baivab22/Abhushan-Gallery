@@ -19,9 +19,15 @@ class FlashSaleError extends Error {
 const roundMoney = (value) => Math.round((Number(value) || 0) * 100) / 100;
 
 const toNumber = (value) => {
+  // `Number(null)` is 0, which would make "no previous price" indistinguishable
+  // from a genuine free product. Treat empty values as missing everywhere.
+  if (value === null || value === undefined || value === '') return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 };
+
+const snapshotNumber = (value) =>
+  value === null || value === undefined ? null : toNumber(value);
 
 // The product's normal selling price before any campaign is applied.
 const getBasePrice = (product) => {
@@ -206,13 +212,16 @@ const applyCampaignToProducts = async (campaign, {session} = {}) => {
     if (basePrice <= 0 || !discountPercentage) return;
 
     const salePrice = roundMoney(basePrice - (basePrice * discountPercentage) / 100);
+    // Checkout requires a positive price, so a 100% campaign cannot be applied.
     if (salePrice <= 0 || salePrice >= basePrice) return;
 
-    const originalForBadge = toNumber(product.originalPrice) > 0
-      ? toNumber(product.originalPrice)
+    const originalPrice = toNumber(product.originalPrice);
+    const originalForBadge = originalPrice !== null && originalPrice > 0
+      ? originalPrice
       : basePrice;
-    const combinedPercentage = roundMoney(
-      ((originalForBadge - salePrice) / originalForBadge) * 100
+    const combinedPercentage = Math.min(
+      100,
+      Math.max(0, roundMoney(((originalForBadge - salePrice) / originalForBadge) * 100))
     );
 
     operations.push({
@@ -226,12 +235,10 @@ const applyCampaignToProducts = async (campaign, {session} = {}) => {
               campaignId: campaign._id,
               discountPercentage,
               salePrice,
-              previousDiscountedPrice:
-                toNumber(product.discountedPrice) !== null ? toNumber(product.discountedPrice) : null,
-              previousDiscountPercentage:
-                toNumber(product.discountPercentage) !== null
-                  ? toNumber(product.discountPercentage)
-                  : null,
+              // Keep the original values as-is so restoration is exact, including
+              // products that had no discounted price before the campaign.
+              previousDiscountedPrice: snapshotNumber(product.discountedPrice),
+              previousDiscountPercentage: snapshotNumber(product.discountPercentage),
               startsAt: campaign.startsAt,
               endsAt: campaign.endsAt,
               appliedAt: now,
@@ -269,17 +276,19 @@ const restoreCampaignProducts = async (campaign, {session} = {}) => {
     const fallback = original !== null && original > 0
       ? original
       : (plainPrice !== null && plainPrice > 0 ? plainPrice : 0);
-    const restoredPrice = previous !== null && previous > 0
+
+    // Snapshotted values win, even when the original discounted price was null
+    // or zero. Only old/legacy snapshots without a value need a fallback.
+    const hasSnapshot = flash.previousDiscountedPrice !== null &&
+      flash.previousDiscountedPrice !== undefined;
+    const restoredPrice = hasSnapshot
       ? previous
       : (fallback > 0 ? fallback : null);
 
     const update = {
       $set: {
         discountedPrice: restoredPrice,
-        discountPercentage:
-          flash.previousDiscountPercentage !== null && flash.previousDiscountPercentage !== undefined
-            ? flash.previousDiscountPercentage
-            : null,
+        discountPercentage: snapshotNumber(flash.previousDiscountPercentage),
         flashSale: null,
       },
     };
@@ -294,21 +303,42 @@ const restoreCampaignProducts = async (campaign, {session} = {}) => {
   return {matchedCount: products.length, restoredCount: operations.length};
 };
 
-let syncRunning = false;
+let syncInFlight = null;
 let lastSyncAt = 0;
+
+// A due campaign must never wait for the throttle: expiry has to restore the
+// original prices before any customer-facing read returns them.
+const hasDueCampaigns = async (now = new Date()) =>
+  Boolean(await FlashSale.exists({
+    $or: [
+      {status: {$in: ['active', 'scheduled']}, endsAt: {$lte: now}},
+      {status: 'scheduled', startsAt: {$lte: now}, endsAt: {$gt: now}},
+      {status: 'active', startsAt: {$gt: now}},
+    ],
+  }));
 
 // Keeps campaign statuses and product prices aligned with the server clock.
 // Safe to call from both the scheduler and public read endpoints.
 const syncCampaignStatuses = async ({force = false} = {}) => {
+  // Concurrent reads should wait for the same sync instead of returning stale
+  // prices while another request is still restoring them.
+  if (syncInFlight) return syncInFlight;
+
   const now = new Date();
   if (!force && Date.now() - lastSyncAt < SYNC_THROTTLE_MS) {
-    return {skipped: true};
+    let due = false;
+    try {
+      due = await hasDueCampaigns(now);
+    } catch (error) {
+      // If the due-check fails, run the sync anyway rather than risk serving
+      // expired sale prices.
+      due = true;
+    }
+    if (!due) return {skipped: true};
   }
-  if (syncRunning) return {skipped: true};
 
-  syncRunning = true;
-  try {
-    lastSyncAt = Date.now();
+  lastSyncAt = Date.now();
+  syncInFlight = (async () => {
     const result = {expired: 0, started: 0, rescheduled: 0, restoredProducts: 0};
 
     const expiredCampaigns = await FlashSale.find({
@@ -360,8 +390,12 @@ const syncCampaignStatuses = async ({force = false} = {}) => {
     }
 
     return result;
+  })();
+
+  try {
+    return await syncInFlight;
   } finally {
-    syncRunning = false;
+    syncInFlight = null;
   }
 };
 
@@ -456,6 +490,9 @@ module.exports = {
   applyCampaignToProducts,
   restoreCampaignProducts,
   syncCampaignStatuses,
+  // Lightweight entry point for read endpoints: only runs when a campaign is
+  // actually due to start, expire or be rescheduled.
+  syncDueFlashSales: () => syncCampaignStatuses({force: false}),
   assertNoConflictingCampaign,
   getActiveCampaign,
   getCampaignProducts,
