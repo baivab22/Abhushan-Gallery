@@ -34,6 +34,58 @@ const getProductImageRefs = (product) => {
   return refs
 }
 
+/**
+ * Expand legacy ProductImage IDs for many products with one query.
+ * Dashboard list views need resolved refs to report accurate image counts;
+ * doing this per product would add hundreds of round trips.
+ */
+const resolveProductImageRefsBulk = async (products) => {
+  const refsByProduct = new Map()
+  const legacyIds = new Set()
+
+  for (const product of products) {
+    const refs = getProductImageRefs(product)
+    refsByProduct.set(String(product._id), refs)
+    for (const ref of refs) {
+      if (/^[a-f\d]{24}$/i.test(ref)) legacyIds.add(ref)
+    }
+  }
+
+  if (!legacyIds.size) return refsByProduct
+
+  const legacyDocs = await ProductImage.find({ _id: { $in: [...legacyIds] } }).lean()
+  const byId = new Map(legacyDocs.map((doc) => [String(doc._id), doc]))
+
+  for (const [productId, refs] of refsByProduct) {
+    const resolved = []
+    const seen = new Set()
+    for (const ref of refs) {
+      const legacy = byId.get(ref)
+      const values = legacy
+        ? [
+            ...(Array.isArray(legacy.coloredImages) ? legacy.coloredImages : []),
+            ...(Array.isArray(legacy.coloredImage)
+              ? legacy.coloredImage
+              : typeof legacy.coloredImage === 'string'
+                ? [legacy.coloredImage]
+                : []),
+          ]
+        : [ref]
+
+      for (const value of values) {
+        if (typeof value !== 'string') continue
+        const clean = value.trim()
+        if (!clean || seen.has(clean)) continue
+        seen.add(clean)
+        resolved.push(clean)
+      }
+    }
+    refsByProduct.set(productId, resolved)
+  }
+
+  return refsByProduct
+}
+
 /** Expand legacy ProductImage IDs into their actual image filenames. */
 const resolveProductImageRefs = async (product) => {
   const refs = getProductImageRefs(product)
@@ -76,6 +128,9 @@ const shouldGenerate = async ({ productId, imageUrl, imageHash, force = false })
   ) {
     return true
   }
+  // A failed document must be retried by a normal indexing run. Otherwise a
+  // temporary Gemini/image read failure would stay broken until a force reindex.
+  if (existing.status !== 'active') return true
   return Boolean(imageHash && existing.imageHash && existing.imageHash !== imageHash)
 }
 
@@ -156,6 +211,7 @@ module.exports = {
   EMBEDDING_VERSION,
   getProductImageRefs,
   resolveProductImageRefs,
+  resolveProductImageRefsBulk,
   shouldGenerate,
   upsertEmbedding,
   markEmbeddingFailed,

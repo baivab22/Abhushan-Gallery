@@ -8,10 +8,12 @@ const {
   normalizeForEmbedding,
   signatureMime,
   ImageValidationError,
+  buildAssetUrl,
 } = require('../services/visualSearch/imageValidation.service')
 const {GeminiEmbeddingError} = require('../services/visualSearch/geminiEmbedding.service')
 const {cosineSimilarity, aggregateScores, buildProductQuery} = require('../services/visualSearch/similarity.service')
 const {getProductImageRefs} = require('../services/visualSearch/embedding.store')
+const {deriveProductIndexStatus} = require('../services/visualSearch/indexer.service')
 const {visualSearchRateLimit} = require('../middlewares/visualSearchRateLimit')
 const {requireAdmin} = require('../auth')
 
@@ -136,6 +138,29 @@ test('product image refs support coloredImages arrays and legacy coloredImage fi
     'three.jpg',
     String(legacyId),
   ])
+})
+
+test('remote product image URLs are built from origin or /uploads asset bases', () => {
+  assert.equal(
+    buildAssetUrl('/uploads/products/photo.jpg', 'https://example.com'),
+    'https://example.com/uploads/products/photo.jpg'
+  )
+  assert.equal(
+    buildAssetUrl('photo.jpg', 'https://example.com/uploads/'),
+    'https://example.com/uploads/products/photo.jpg'
+  )
+  assert.equal(
+    buildAssetUrl('/uploads/products/photo.jpg?v=2', 'https://example.com/uploads'),
+    'https://example.com/uploads/products/photo.jpg?v=2'
+  )
+})
+
+test('per-product index status distinguishes indexed, partial, failed and pending', () => {
+  assert.equal(deriveProductIndexStatus({imageCount: 0, activeCount: 0, failedCount: 0}), 'no-images')
+  assert.equal(deriveProductIndexStatus({imageCount: 2, activeCount: 2, failedCount: 0}), 'indexed')
+  assert.equal(deriveProductIndexStatus({imageCount: 2, activeCount: 1, failedCount: 0}), 'partial')
+  assert.equal(deriveProductIndexStatus({imageCount: 2, activeCount: 0, failedCount: 1}), 'failed')
+  assert.equal(deriveProductIndexStatus({imageCount: 2, activeCount: 0, failedCount: 0}), 'pending')
 })
 
 test('rate limiter blocks requests over the configured per-minute limit', () => {

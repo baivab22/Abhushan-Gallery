@@ -2,7 +2,7 @@ const mongoose = require('mongoose')
 const { config, isConfigured, publicSettings } = require('../config/visualSearch.config')
 const { normalizeForEmbedding, ImageValidationError } = require('../services/visualSearch/imageValidation.service')
 const { embedImage, GeminiEmbeddingError } = require('../services/visualSearch/geminiEmbedding.service')
-const { searchSimilarProducts } = require('../services/visualSearch/similarity.service')
+const { searchSimilarProducts, searchIndexedProduct } = require('../services/visualSearch/similarity.service')
 const indexer = require('../services/visualSearch/indexer.service')
 const { deleteProductEmbeddings } = require('../services/visualSearch/embedding.store')
 
@@ -67,6 +67,46 @@ exports.getAdminStatus = async (_req, res) => {
   } catch (error) {
     console.error('[visual-search] status failed:', error.message)
     sendError(res, 500, 'Could not load indexing status.', 'STATUS_FAILED')
+  }
+}
+
+exports.getProducts = async (req, res) => {
+  try {
+    const data = await indexer.getProductIndexStatus(req.query || {})
+    res.status(200).json({ success: true, data })
+  } catch (error) {
+    console.error('[visual-search] product list failed:', error.message)
+    sendError(res, 500, 'Could not load the product indexing list.', 'PRODUCT_LIST_FAILED')
+  }
+}
+
+/**
+ * Admin diagnostic: search with a product's own indexed image.
+ * Uses exactly the same stored vectors and ranking as the customer camera search.
+ */
+exports.testProductSearch = async (req, res) => {
+  try {
+    const { productId } = req.params
+    if (!mongoose.isValidObjectId(productId)) {
+      return sendError(res, 400, 'A valid product ID is required.')
+    }
+    const result = await searchIndexedProduct(productId, req.body || {})
+    if (result.error === 'PRODUCT_NOT_FOUND') {
+      return sendError(res, 404, 'Product not found.', 'PRODUCT_NOT_FOUND')
+    }
+    if (result.error === 'NOT_INDEXED') {
+      return sendError(res, 409, 'This product has no active embedding. Index it before testing.', 'NOT_INDEXED')
+    }
+    return res.status(200).json({
+      success: true,
+      message: result.results.length
+        ? `${result.results.length} visually similar product(s) found.`
+        : 'No visually similar products were found for this image.',
+      data: result,
+    })
+  } catch (error) {
+    console.error('[visual-search] product test failed:', error.message)
+    sendError(res, 500, 'Could not run visual search for this product.', 'TEST_FAILED')
   }
 }
 

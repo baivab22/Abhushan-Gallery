@@ -8,12 +8,14 @@
 const mongoose = require('mongoose')
 const { Product } = require('../../modals/product.modal')
 const VisualSearchJob = require('../../modals/visualSearchJob.modal')
+const VisualSearchEmbedding = require('../../modals/visualSearchEmbedding.modal')
 const { config } = require('../../config/visualSearch.config')
 const { readProductImage, normalizeForEmbedding } = require('./imageValidation.service')
 const { embedImage } = require('./geminiEmbedding.service')
 const {
   EMBEDDING_VERSION,
   resolveProductImageRefs,
+  resolveProductImageRefsBulk,
   shouldGenerate,
   upsertEmbedding,
   markEmbeddingFailed,
@@ -204,6 +206,9 @@ const runSweep = async () => {
   if (sweepRunning) return { skipped: true }
   sweepRunning = true
   try {
+    // Also recover here, not only at boot: a process that stays alive must not
+    // leave a crashed job stuck in `running` and block all future indexing.
+    await recoverStaleJobs()
     const job = await claimJob()
     if (!job) return { processed: false }
 
@@ -312,6 +317,115 @@ const getCatalogStats = async () => {
   }
 }
 
+const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/**
+ * A product is usable by customer visual search only when at least one of its
+ * current images has an active embedding for the active model/dimensions.
+ */
+const deriveProductIndexStatus = ({ imageCount, activeCount, failedCount }) => {
+  if (!imageCount) return 'no-images'
+  if (activeCount >= imageCount) return 'indexed'
+  if (activeCount > 0) return 'partial'
+  if (failedCount > 0) return 'failed'
+  return 'pending'
+}
+
+/**
+ * Paginated per-product indexing overview for the admin dashboard. Embeddings
+ * from an older model/version/dimension are ignored because search ignores them.
+ */
+const getProductIndexStatus = async ({ page = 1, limit = 20, status = 'all', search = '' } = {}) => {
+  const parsedPage = Number.parseInt(page, 10)
+  const parsedLimit = Number.parseInt(limit, 10)
+  const safeLimit = Math.min(100, Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 20)
+  const match = {}
+  const term = String(search || '').trim()
+  if (term) match.name = { $regex: escapeRegExp(term), $options: 'i' }
+
+  const [products, groups] = await Promise.all([
+    Product.find(match)
+      .select('name images price discountedPrice stockQuantity updatedAt')
+      .sort({ name: 1 })
+      .lean(),
+    VisualSearchEmbedding.aggregate([
+      {
+        $match: {
+          embeddingModel: config.model,
+          embeddingVersion: EMBEDDING_VERSION,
+          dimensions: config.dimensions,
+        },
+      },
+      { $sort: { updatedAt: -1 } },
+      {
+        $group: {
+          _id: '$productId',
+          activeCount: { $sum: { $cond: [{ $eq: ['$status', 'active'] }, 1, 0] } },
+          failedCount: { $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] } },
+          lastIndexedAt: { $max: { $cond: [{ $eq: ['$status', 'active'] }, '$updatedAt', null] } },
+          lastError: {
+            $max: { $cond: [{ $eq: ['$status', 'failed'] }, '$lastError', null] },
+          },
+        },
+      },
+    ]),
+  ])
+
+  const byProduct = new Map(groups.map((row) => [String(row._id), row]))
+  const refsByProduct = await resolveProductImageRefsBulk(products)
+  const all = products.map((product) => {
+    const refs = refsByProduct.get(String(product._id)) || []
+    const group = byProduct.get(String(product._id)) || {}
+    const imageCount = refs.length
+    const activeCount = group.activeCount || 0
+    const failedCount = group.failedCount || 0
+    return {
+      id: String(product._id),
+      name: product.name || 'Untitled product',
+      image: refs[0] || null,
+      price: product.price ?? null,
+      discountedPrice: product.discountedPrice ?? null,
+      stockQuantity: product.stockQuantity ?? null,
+      imageCount,
+      indexedImages: activeCount,
+      failedImages: failedCount,
+      pendingImages: Math.max(0, imageCount - activeCount - failedCount),
+      status: deriveProductIndexStatus({ imageCount, activeCount, failedCount }),
+      searchable: activeCount > 0,
+      lastIndexedAt: group.lastIndexedAt || null,
+      lastError: group.lastError || null,
+    }
+  })
+
+  const countStatus = (value) => all.filter((item) => item.status === value).length
+  const summary = {
+    total: all.length,
+    searchable: all.filter((item) => item.searchable).length,
+    indexed: countStatus('indexed'),
+    partial: countStatus('partial'),
+    pending: countStatus('pending'),
+    failed: countStatus('failed'),
+    noImages: countStatus('no-images'),
+  }
+
+  const wanted = String(status || 'all')
+  const filtered =
+    wanted === 'all'
+      ? all
+      : wanted === 'searchable'
+        ? all.filter((item) => item.searchable)
+        : all.filter((item) => item.status === wanted)
+  const total = filtered.length
+  const pages = Math.max(1, Math.ceil(total / safeLimit))
+  const safePage = Number.isFinite(parsedPage) && parsedPage > 0 ? Math.min(parsedPage, pages) : 1
+
+  return {
+    items: filtered.slice((safePage - 1) * safeLimit, safePage * safeLimit),
+    pagination: { page: safePage, limit: safeLimit, total, pages },
+    summary,
+  }
+}
+
 const getJobStatus = async () => {
   const [job, embeddingStats, catalogStats] = await Promise.all([
     VisualSearchJob.findOne().sort({ createdAt: -1 }).lean(),
@@ -326,7 +440,7 @@ const getJobStatus = async () => {
           type: job.type,
           status: job.status,
           reason: job.reason,
-          total: catalogStats.catalogImages,
+          total: catalogStats.productsWithImages,
           processed: job.processed || 0,
           succeeded: job.succeeded || 0,
           failed: job.failed || 0,
@@ -362,4 +476,6 @@ module.exports = {
   recoverStaleJobs,
   getJobStatus,
   getCatalogStats,
+  getProductIndexStatus,
+  deriveProductIndexStatus,
 }

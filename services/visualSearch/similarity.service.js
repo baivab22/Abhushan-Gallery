@@ -202,9 +202,42 @@ const searchSimilarProducts = async (queryVector, filters = {}) => {
   }
 }
 
+/**
+ * Admin diagnostic: run the exact same ranking pipeline using an already
+ * indexed product image instead of a customer upload.
+ */
+const searchIndexedProduct = async (productId, filters = {}) => {
+  const [product, embedding] = await Promise.all([
+    Product.findById(productId).select('name images').lean(),
+    VisualSearchEmbedding.findOne({
+      productId,
+      embeddingModel: config.model,
+      embeddingVersion: EMBEDDING_VERSION,
+      dimensions: config.dimensions,
+      status: 'active',
+    })
+      .select('embedding imageUrl')
+      .lean(),
+  ])
+
+  if (!product) return { error: 'PRODUCT_NOT_FOUND' }
+  if (!embedding?.embedding?.length) return { error: 'NOT_INDEXED' }
+
+  const result = await searchSimilarProducts(embedding.embedding, filters)
+  return {
+    ...result,
+    queryImage: {
+      productId: String(product._id),
+      name: product.name || 'Untitled product',
+      imageUrl: embedding.imageUrl,
+    },
+  }
+}
+
 module.exports = {
   cosineSimilarity,
   aggregateScores,
   buildProductQuery,
   searchSimilarProducts,
+  searchIndexedProduct,
 }

@@ -106,6 +106,54 @@ const normalizeForEmbedding = async (buffer, declaredMimeType) => {
 
 const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads', 'products')
 
+/**
+ * Resolve a stored product image reference against the configured asset host.
+ * The base may be an origin (`https://example.com`) or the `/uploads` root
+ * (`https://example.com/uploads`). Product files live under `/uploads/products`.
+ */
+const buildAssetUrl = (imageRef, assetBase) => {
+  const ref = String(imageRef || '').trim()
+  const base = String(assetBase || '').trim().replace(/\/+$/, '')
+  if (!ref || !base) return ''
+
+  const [pathname, query] = ref.split('?')
+  let relative = pathname.replace(/^\/+/, '')
+  if (relative.toLowerCase().startsWith('uploads/')) {
+    relative = relative.slice('uploads/'.length)
+  }
+  if (!relative.toLowerCase().startsWith('products/')) {
+    relative = `products/${relative}`
+  }
+
+  const basePath = base.replace(/^https?:\/\/[^/]+/i, '').replace(/\/+$/, '')
+  const prefix = /\/uploads$/i.test(basePath) ? base : `${base}/uploads`
+  return `${prefix}/${relative}${query ? `?${query}` : ''}`
+}
+
+const readRemoteImage = async (url) => {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), config.timeouts.imageFetch)
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {'User-Agent': 'compiledEcommerce-visual-search/1.0'},
+    })
+    if (!response.ok) {
+      throw new ImageValidationError('Product image could not be downloaded.', 'IMAGE_FETCH_FAILED', 502)
+    }
+    const contentType = String(response.headers.get('content-type') || '')
+    if (contentType && !/^image\/(jpe?g|png|webp)/i.test(contentType)) {
+      throw new ImageValidationError('Product image URL did not return an image.', 'IMAGE_FETCH_FAILED', 502)
+    }
+    return Buffer.from(await response.arrayBuffer())
+  } catch (error) {
+    if (error instanceof ImageValidationError) throw error
+    throw new ImageValidationError('Product image could not be downloaded.', 'IMAGE_FETCH_FAILED', 502)
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /** Read one product image. Local files are preferred; remote URLs are fetched one at a time. */
 const readProductImage = async (imageRef) => {
   if (typeof imageRef !== 'string' || !imageRef.trim()) {
@@ -115,40 +163,20 @@ const readProductImage = async (imageRef) => {
   const ref = imageRef.trim()
   const fileName = path.basename(decodeURIComponent(ref.split('?')[0]))
 
-  if (/^https?:\/\//i.test(ref)) {
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), config.timeouts.imageFetch)
-    try {
-      const response = await fetch(ref, { signal: controller.signal })
-      if (!response.ok) {
-        throw new ImageValidationError('Product image could not be downloaded.', 'IMAGE_FETCH_FAILED', 502)
-      }
-      const arrayBuffer = await response.arrayBuffer()
-      return Buffer.from(arrayBuffer)
-    } catch (error) {
-      if (error instanceof ImageValidationError) throw error
-      throw new ImageValidationError('Product image download timed out.', 'IMAGE_FETCH_TIMEOUT', 504)
-    } finally {
-      clearTimeout(timer)
-    }
-  }
+  if (/^https?:\/\//i.test(ref)) return readRemoteImage(ref)
 
   try {
     return await fs.readFile(path.join(UPLOADS_DIR, fileName))
   } catch (error) {
     const assetBase = String(process.env.VISUAL_SEARCH_ASSET_BASE_URL || '').trim()
     if (assetBase) {
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), config.timeouts.imageFetch)
-      try {
-        const response = await fetch(buildAssetUrl(ref, assetBase), {
-          signal: controller.signal,
-        })
-        if (response.ok) return Buffer.from(await response.arrayBuffer())
-      } catch (_) {
-        // Fall through to the original missing-file error.
-      } finally {
-        clearTimeout(timer)
+      const assetUrl = buildAssetUrl(ref, assetBase)
+      if (assetUrl) {
+        try {
+          return await readRemoteImage(assetUrl)
+        } catch (_) {
+          // Fall through to the original missing-file error.
+        }
       }
     }
     throw new ImageValidationError('Product image file is missing.', 'MISSING_IMAGE', 404)
@@ -160,4 +188,5 @@ module.exports = {
   normalizeForEmbedding,
   readProductImage,
   signatureMime,
+  buildAssetUrl,
 }
