@@ -464,6 +464,97 @@ const getJobStatus = async () => {
   }
 }
 
+/**
+ * Image-level overview: every embedding that visual search can actually use
+ * (or that failed to become usable) for the active model/version/dimensions.
+ */
+const getImageIndexStatus = async ({
+  page = 1,
+  limit = 20,
+  status = 'active',
+  search = '',
+  productId = '',
+} = {}) => {
+  const parsedPage = Number.parseInt(page, 10)
+  const parsedLimit = Number.parseInt(limit, 10)
+  const safeLimit = Math.min(100, Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 20)
+  const query = {
+    embeddingModel: config.model,
+    embeddingVersion: EMBEDDING_VERSION,
+    dimensions: config.dimensions,
+  }
+  const wanted = ['all', 'active', 'failed', 'missing'].includes(String(status)) ? String(status) : 'active'
+  if (wanted !== 'all') query.status = wanted
+
+  if (mongoose.isValidObjectId(String(productId || ''))) {
+    query.productId = new mongoose.Types.ObjectId(String(productId))
+  }
+
+  const term = String(search || '').trim()
+  if (term) {
+    const escaped = escapeRegExp(term)
+    const or = [{ imageUrl: { $regex: escaped, $options: 'i' } }]
+    const matchingProducts = await Product.find({ name: { $regex: escaped, $options: 'i' } })
+      .select('_id')
+      .lean()
+    if (matchingProducts.length) {
+      or.push({ productId: { $in: matchingProducts.map((product) => product._id) } })
+    }
+    if (mongoose.isValidObjectId(term)) or.push({ productId: new mongoose.Types.ObjectId(term) })
+    query.$or = or
+  }
+
+  const [total, docs, summaryRows] = await Promise.all([
+    VisualSearchEmbedding.countDocuments(query),
+    VisualSearchEmbedding.find(query)
+      .sort({ updatedAt: -1 })
+      .skip((Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage - 1 : 0) * safeLimit)
+      .limit(safeLimit)
+      .lean(),
+    VisualSearchEmbedding.aggregate([
+      {
+        $match: {
+          embeddingModel: config.model,
+          embeddingVersion: EMBEDDING_VERSION,
+          dimensions: config.dimensions,
+        },
+      },
+      { $group: { _id: '$status', count: { $sum: 1 } } },
+    ]),
+  ])
+
+  const productIds = [...new Set(docs.map((doc) => String(doc.productId)))]
+  const products = await Product.find({ _id: { $in: productIds } }).select('name').lean()
+  const productNames = new Map(products.map((product) => [String(product._id), product.name]))
+
+  const items = docs.map((doc) => ({
+    id: String(doc._id),
+    productId: String(doc.productId),
+    productName: productNames.get(String(doc.productId)) || 'Unknown product',
+    imageUrl: doc.imageUrl,
+    status: doc.status,
+    searchable: doc.status === 'active',
+    model: doc.embeddingModel,
+    version: doc.embeddingVersion,
+    dimensions: doc.dimensions,
+    imageHash: doc.imageHash || null,
+    lastError: doc.lastError || null,
+    indexedAt: doc.updatedAt || doc.createdAt || null,
+  }))
+
+  const pages = Math.max(1, Math.ceil(total / safeLimit))
+  const safePage = Number.isFinite(parsedPage) && parsedPage > 0 ? Math.min(parsedPage, pages) : 1
+  const summary = { all: 0, active: 0, failed: 0, missing: 0 }
+  for (const row of summaryRows) summary[row._id] = row.count
+  summary.all = summaryRows.reduce((sum, row) => sum + row.count, 0)
+
+  return {
+    items,
+    pagination: { page: safePage, limit: safeLimit, total, pages },
+    summary,
+  }
+}
+
 module.exports = {
   ACTIVE_STATUSES,
   queueProductForIndexing,
@@ -477,5 +568,6 @@ module.exports = {
   getJobStatus,
   getCatalogStats,
   getProductIndexStatus,
+  getImageIndexStatus,
   deriveProductIndexStatus,
 }

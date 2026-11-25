@@ -80,6 +80,16 @@ exports.getProducts = async (req, res) => {
   }
 }
 
+exports.getImages = async (req, res) => {
+  try {
+    const data = await indexer.getImageIndexStatus(req.query || {})
+    res.status(200).json({ success: true, data })
+  } catch (error) {
+    console.error('[visual-search] image list failed:', error.message)
+    sendError(res, 500, 'Could not load the image indexing list.', 'IMAGE_LIST_FAILED')
+  }
+}
+
 /**
  * Admin diagnostic: search with a product's own indexed image.
  * Uses exactly the same stored vectors and ranking as the customer camera search.
