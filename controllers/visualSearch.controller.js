@@ -104,8 +104,15 @@ exports.testProductSearch = async (req, res) => {
     if (result.error === 'PRODUCT_NOT_FOUND') {
       return sendError(res, 404, 'Product not found.', 'PRODUCT_NOT_FOUND')
     }
-    if (result.error === 'NOT_INDEXED') {
-      return sendError(res, 409, 'This product has no active embedding. Index it before testing.', 'NOT_INDEXED')
+    if (result.error === 'NOT_INDEXED' || result.error === 'IMAGE_NOT_INDEXED') {
+      return sendError(
+        res,
+        409,
+        result.error === 'IMAGE_NOT_INDEXED'
+          ? 'This image has no active embedding. Index it before testing.'
+          : 'This product has no active embedding. Index it before testing.',
+        result.error
+      )
     }
     return res.status(200).json({
       success: true,

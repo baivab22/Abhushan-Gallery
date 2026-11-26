@@ -53,6 +53,7 @@ router.post('/visual-search', visualSearchRateLimit, singleImage, controller.vis
    ========================= */
 router.get('/admin/visual-search/status', authenticate, requireAdmin, controller.getAdminStatus)
 router.get('/admin/visual-search/products', authenticate, requireAdmin, controller.getProducts)
+router.get('/admin/visual-search/images', authenticate, requireAdmin, controller.getImages)
 router.post('/admin/visual-search/test/:productId', authenticate, requireAdmin, controller.testProductSearch)
 router.post('/admin/visual-search/index', authenticate, requireAdmin, controller.startIndexing)
 router.post('/admin/visual-search/pause', authenticate, requireAdmin, controller.pauseIndexing)

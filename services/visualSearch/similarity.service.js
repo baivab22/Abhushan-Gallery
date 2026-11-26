@@ -207,23 +207,27 @@ const searchSimilarProducts = async (queryVector, filters = {}) => {
  * indexed product image instead of a customer upload.
  */
 const searchIndexedProduct = async (productId, filters = {}) => {
+  const { imageUrl, ...productFilters } = filters || {}
+  const embeddingQuery = {
+    productId,
+    embeddingModel: config.model,
+    embeddingVersion: EMBEDDING_VERSION,
+    dimensions: config.dimensions,
+    status: 'active',
+  }
+  if (imageUrl) embeddingQuery.imageUrl = String(imageUrl)
+
   const [product, embedding] = await Promise.all([
     Product.findById(productId).select('name images').lean(),
-    VisualSearchEmbedding.findOne({
-      productId,
-      embeddingModel: config.model,
-      embeddingVersion: EMBEDDING_VERSION,
-      dimensions: config.dimensions,
-      status: 'active',
-    })
-      .select('embedding imageUrl')
-      .lean(),
+    VisualSearchEmbedding.findOne(embeddingQuery).select('embedding imageUrl').lean(),
   ])
 
   if (!product) return { error: 'PRODUCT_NOT_FOUND' }
-  if (!embedding?.embedding?.length) return { error: 'NOT_INDEXED' }
+  if (!embedding?.embedding?.length) {
+    return { error: imageUrl ? 'IMAGE_NOT_INDEXED' : 'NOT_INDEXED' }
+  }
 
-  const result = await searchSimilarProducts(embedding.embedding, filters)
+  const result = await searchSimilarProducts(embedding.embedding, productFilters)
   return {
     ...result,
     queryImage: {
