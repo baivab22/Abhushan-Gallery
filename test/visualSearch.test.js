@@ -313,3 +313,78 @@ test('Gemini client rejects invalid embedding responses', async () => {
     config.retries.max = originalRetries
   }
 })
+
+test('queueing a new product starts an indexing sweep without a manual run', async () => {
+  const indexer = require('../services/visualSearch/indexer.service')
+  const VisualSearchJob = require('../modals/visualSearchJob.modal')
+  const VisualSearchEmbedding = require('../modals/visualSearchEmbedding.modal')
+  const {Product} = require('../modals/product.modal')
+
+  const originals = {
+    findOneAndUpdate: VisualSearchJob.findOneAndUpdate,
+    create: VisualSearchJob.create,
+    updateMany: VisualSearchJob.updateMany,
+    updateOne: VisualSearchJob.updateOne,
+    productFind: Product.find,
+    embeddingDeleteMany: VisualSearchEmbedding.deleteMany,
+  }
+
+  const productId = new mongoose.Types.ObjectId()
+  const jobId = new mongoose.Types.ObjectId()
+  let findOneAndUpdateCalls = 0
+  let sweepClaimedJob = false
+  let finalStatus = null
+
+  try {
+    VisualSearchJob.findOneAndUpdate = async (filter) => {
+      findOneAndUpdateCalls += 1
+      if (findOneAndUpdateCalls === 1) {
+        assert.equal(filter.type, 'product')
+        return null
+      }
+      sweepClaimedJob = true
+      return {
+        _id: jobId,
+        type: 'product',
+        status: 'running',
+        force: false,
+        batchSize: 5,
+        delayMs: 0,
+        queue: [productId],
+        cursorId: null,
+        processed: 0,
+        succeeded: 0,
+        failed: 0,
+      }
+    }
+    VisualSearchJob.create = async (payload) => {
+      assert.equal(payload.type, 'product')
+      assert.deepEqual(payload.queue.map(String), [String(productId)])
+      return {...payload, _id: jobId, status: 'queued', batchSize: 5, delayMs: 0}
+    }
+    VisualSearchJob.updateMany = async () => ({modifiedCount: 0})
+    VisualSearchJob.updateOne = async (_filter, update) => {
+      if (update?.$set?.status) finalStatus = update.$set.status
+      return {modifiedCount: 1}
+    }
+    Product.find = () => ({lean: async () => []})
+    VisualSearchEmbedding.deleteMany = async () => ({deletedCount: 0})
+
+    const job = await indexer.queueProductForIndexing(productId, {reason: 'product created'})
+    assert.equal(job.type, 'product')
+
+    for (let attempt = 0; attempt < 50 && !finalStatus; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 2))
+    }
+
+    assert.equal(sweepClaimedJob, true)
+    assert.equal(finalStatus, 'completed')
+  } finally {
+    VisualSearchJob.findOneAndUpdate = originals.findOneAndUpdate
+    VisualSearchJob.create = originals.create
+    VisualSearchJob.updateMany = originals.updateMany
+    VisualSearchJob.updateOne = originals.updateOne
+    Product.find = originals.productFind
+    VisualSearchEmbedding.deleteMany = originals.embeddingDeleteMany
+  }
+})

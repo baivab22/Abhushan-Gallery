@@ -2,11 +2,50 @@ const Cart = require("../modals/cart.modal");
 const { Product } = require("../modals/product.modal");
 
 const getRequestedQuantity = (value) => Math.max(1, Number(value || 1));
+const normalizeVariant = (value) => String(value ?? "").trim();
+
+// A cart can hold several lines for the same product when the shopper picks
+// different colours and/or sizes. Updates must therefore target the matching
+// line, not simply the first product with the same id.
+const findCartItem = (cart, { productId, routeId, colorName, size }) => {
+  const matchesId = (item) => {
+    const itemProductId = String(item?.productId?._id || item?.productId || "");
+    const lineId = String(item?._id || "");
+    const requestedId = String(routeId || productId || "");
+    return (
+      (requestedId && itemProductId === requestedId) ||
+      (requestedId && lineId === requestedId) ||
+      (productId && itemProductId === String(productId))
+    );
+  };
+
+  const candidates = (cart.products || []).filter(matchesId);
+  const matchesVariant = (item) =>
+    (colorName === undefined ||
+      normalizeVariant(colorName) === normalizeVariant(item.colorName)) &&
+    (size === undefined || normalizeVariant(size) === normalizeVariant(item.size));
+
+  return candidates.find(matchesVariant) || candidates[0];
+};
 
 const getAvailableStock = async (productId) => {
   const product = await Product.findById(productId).select('stockQuantity');
   return Number(product?.stockQuantity || 0);
 };
+
+const getLineProductId = (item) =>
+  String(item?.productId?._id || item?.productId || '');
+
+// Stock is tracked per product, not per variant. Sum every cart line for that
+// product so two sizes/colours cannot together exceed the available stock.
+const quantityOfProduct = (cart, productId) =>
+  (cart?.products || []).reduce(
+    (total, item) =>
+      getLineProductId(item) === String(productId)
+        ? total + Number(item.quantity || 0)
+        : total,
+    0
+  );
 
 // Restock alerts are opt-in: only the explicit "Notify Me" action (cart or
 // product page) creates a subscription. Adding/updating a cart item must never
@@ -16,22 +55,31 @@ const getAvailableStock = async (productId) => {
 exports.createCart = async (req, res) => {
   try {
     const requestedProducts = Array.isArray(req.body?.products) ? req.body.products : [];
+    const requestedByProduct = new Map();
     for (const item of requestedProducts) {
       const productId = item?.productId;
       if (!productId) {
         return res.status(400).json({ message: 'productId is required for cart items' });
       }
 
-      const quantity = getRequestedQuantity(item?.quantity);
-      const stockQuantity = await getAvailableStock(productId);
-      if (quantity > stockQuantity) {
-        return res.status(400).json({
-          message: `Only ${stockQuantity} items available in stock`,
-        });
-      }
+      const key = String(productId);
+      requestedByProduct.set(
+        key,
+        (requestedByProduct.get(key) || 0) + getRequestedQuantity(item?.quantity)
+      );
     }
 
     const existingCart = await Cart.findOne({ userId: req.body.userId });
+
+    for (const [productId, quantity] of requestedByProduct) {
+      const stockQuantity = await getAvailableStock(productId);
+      const alreadyInCart = quantityOfProduct(existingCart, productId);
+      if (alreadyInCart + quantity > stockQuantity) {
+        return res.status(400).json({
+          message: `Only ${Math.max(0, stockQuantity - alreadyInCart)} items available in stock`,
+        });
+      }
+    }
 
     if (existingCart) {
       existingCart.products.push(...req.body.products);
@@ -74,7 +122,7 @@ exports.getUsersCartByUserId = async (req, res) => {
 
 exports.updateCartProduct = async (req, res) => {
   try {
-    const { productId, userId, quantity, price } = req.body;
+    const { productId, userId, quantity, price, colorName, size } = req.body;
 
     console.log(quantity, "quantity");
 
@@ -86,22 +134,32 @@ exports.updateCartProduct = async (req, res) => {
       console.log("if");
       return res.status(404).json({ message: "User not found" });
     } else {
-      const productToUpdate = cart.products.find(
-        (item) => item.productId == productId
-      );
+      const productToUpdate = findCartItem(cart, {
+        productId,
+        routeId: req.params.productId,
+        colorName,
+        size,
+      });
       if (productToUpdate) {
-        const stockQuantity = await getAvailableStock(productId);
+        const targetProductId =
+          productToUpdate.productId?._id || productToUpdate.productId || productId;
+        const stockQuantity = await getAvailableStock(targetProductId);
         const requestedQuantity = getRequestedQuantity(quantity);
+        const otherLinesQuantity =
+          quantityOfProduct(cart, targetProductId) -
+          Number(productToUpdate.quantity || 0);
 
-        if (requestedQuantity > stockQuantity) {
+        if (otherLinesQuantity + requestedQuantity > stockQuantity) {
           return res.status(400).json({
-            message: `Only ${stockQuantity} items available in stock`,
+            message: `Only ${Math.max(0, stockQuantity - otherLinesQuantity)} items available in stock`,
           });
         }
 
         console.log("else if", quantity, price);
         productToUpdate.quantity = requestedQuantity;
         productToUpdate.price = price;
+        if (colorName !== undefined) productToUpdate.colorName = colorName;
+        if (size !== undefined) productToUpdate.size = normalizeVariant(size) || undefined;
         const updatedCart = await cart.save();
 
         console.log(updatedCart, "updatedCart");

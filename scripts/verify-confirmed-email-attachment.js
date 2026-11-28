@@ -49,7 +49,7 @@ const order = {
   userId: { _id: '64f0000000000000000000bb', email: 'sita@example.com', name: 'Sita Sharma' },
   shippingLocation: 'Kathmandu',
   locationAddress: 'Balaju, Block 3',
-  phoneNumber: '+977 9841000000',
+  phoneNumber: '+977 9768620644',
   paymentMethod: 'esewa',
   shippingPrice: 150,
   totalAmount: 4500,

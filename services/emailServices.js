@@ -15,6 +15,14 @@ const {
 
 const formatCurrency = (value) => `NPR ${Number(value || 0).toFixed(2)}`;
 
+// Order lines can carry a colour and/or a size. Keep both visible in emails so
+// the customer and the admin see exactly which variant was ordered.
+const getVariantLabel = (item) => {
+  const color = item?.colorName || '-';
+  const size = item?.size ? ` / Size: ${item.size}` : '';
+  return `${color}${size}`;
+};
+
 /**
  * Build the invoice attachment for an order email.
  *
@@ -79,7 +87,7 @@ const buildInvoiceAttachment = async ({ order, customerEmail, customerName, send
 const buildFooterHtml = () => `
   <div style="margin-top:32px;padding-top:16px;border-top:1px solid #e5e7eb;font-size:12px;color:#6b7280;text-align:center;line-height:1.6;">
     <p style="margin:0;">Abhushan Gallery | Kalimati, Kathmandu, Nepal</p>
-    <p style="margin:4px 0 0;">Phone: 9861698400 | Email: ${EMAIL_CONFIG.sender}</p>
+    <p style="margin:4px 0 0;">Phone: 9768620644 | Email: ${EMAIL_CONFIG.sender}</p>
     <p style="margin:8px 0 0;">&copy; ${new Date().getFullYear()} Abhushan Gallery. All rights reserved.</p>
   </div>
 `;
@@ -87,7 +95,7 @@ const buildFooterHtml = () => `
 const buildFooterText = () => `
 ---
 Abhushan Gallery | Kalimati, Kathmandu, Nepal
-Phone: 9861698400 | Email: ${EMAIL_CONFIG.sender}
+Phone: 9768620644 | Email: ${EMAIL_CONFIG.sender}
 (c) ${new Date().getFullYear()} Abhushan Gallery. All rights reserved.
 `;
 
@@ -335,7 +343,7 @@ const sendNewOrderPlacedNotification = async (order) => {
       .map((item, index) => {
         const productId = item?.productId?._id || item?.productId || "N/A";
         const productName = item?.productId?.name || "Product";
-        const colorName = item?.colorName || "-";
+        const colorName = getVariantLabel(item);
         const quantity = Number(item?.quantity || 0);
         const linePrice = Number(item?.price || 0);
         subtotal += linePrice;
@@ -476,7 +484,7 @@ Est. Delivery: ${deliveryTime}
 Ship To: ${shippingLocation}
 
 PRODUCTS:
-${(order?.products || []).map((item, i) => `${i + 1}. ${item?.productId?.name || 'Product'} (${item?.colorName || '-'}) x${item?.quantity || 0} - ${formatCurrency(item?.price || 0)}`).join('\n')}
+${(order?.products || []).map((item, i) => `${i + 1}. ${item?.productId?.name || 'Product'} (${getVariantLabel(item)}) x${item?.quantity || 0} - ${formatCurrency(item?.price || 0)}`).join('\n')}
 
 Subtotal: ${formatCurrency(subtotal)}
 Shipping: ${formatCurrency(shippingPrice)}
@@ -533,7 +541,7 @@ const sendOrderConfirmationToCustomer = async (order) => {
     const productsHtml = (order?.products || [])
       .map((item, index) => {
         const productName = item?.productId?.name || 'Product';
-        const colorName = item?.colorName || '-';
+        const colorName = getVariantLabel(item);
         const quantity = Number(item?.quantity || 0);
         const linePrice = Number(item?.price || 0);
         subtotal += linePrice;
@@ -676,7 +684,7 @@ Partner: ${deliveryPartner}
 Est. Delivery: ${deliveryTime}
 
 ORDER ITEMS:
-${(order?.products || []).map((item, i) => `${i + 1}. ${item?.productId?.name || 'Product'} (${item?.colorName || '-'}) x${item?.quantity || 0} - ${formatCurrency(item?.price || 0)}`).join('\n')}
+${(order?.products || []).map((item, i) => `${i + 1}. ${item?.productId?.name || 'Product'} (${getVariantLabel(item)}) x${item?.quantity || 0} - ${formatCurrency(item?.price || 0)}`).join('\n')}
 
 Subtotal: ${formatCurrency(subtotal)}
 Shipping: ${formatCurrency(shippingPrice)}
@@ -732,7 +740,7 @@ const sendOrderPlacedConfirmationToCustomer = async (order) => {
     const productsHtml = (order?.products || [])
       .map((item, index) => {
         const productName = item?.productId?.name || 'Product';
-        const colorName = item?.colorName || '-';
+        const colorName = getVariantLabel(item);
         const quantity = Number(item?.quantity || 0);
         const linePrice = Number(item?.price || 0);
         subtotal += linePrice;
@@ -883,7 +891,7 @@ Partner: ${deliveryPartner}
 Est. Delivery: ${deliveryTime}
 
 ORDER SUMMARY:
-${(order?.products || []).map((item, i) => `${i + 1}. ${item?.productId?.name || 'Product'} (${item?.colorName || '-'}) x${item?.quantity || 0} - ${formatCurrency(item?.price || 0)}`).join('\n')}
+${(order?.products || []).map((item, i) => `${i + 1}. ${item?.productId?.name || 'Product'} (${getVariantLabel(item)}) x${item?.quantity || 0} - ${formatCurrency(item?.price || 0)}`).join('\n')}
 
 Subtotal: ${formatCurrency(subtotal)}
 Shipping: ${formatCurrency(shippingPrice)}

@@ -27,7 +27,7 @@ const order = {
   name: 'Sita Sharma',
   shippingLocation: 'Kathmandu',
   locationAddress: 'Balaju, Block 3',
-  phoneNumber: '+977 9841000000',
+  phoneNumber: '+977 9768620644',
   paymentMethod: 'esewa',
   shippingPrice: 150,
   totalAmount: 4500,

@@ -85,6 +85,14 @@ const productSchema = new mongoose.Schema(
         default: undefined,
       }
     }],
+
+    // Optional per-product sizes. Values may arrive as strings ("S", "M") or
+    // numbers (42); they are normalised to strings by the controller so that
+    // "42" and 42 are never stored as two different options.
+    sizes: {
+      type: [String],
+      default: [],
+    },
     
     category: {
       type: mongoose.Schema.Types.ObjectId,

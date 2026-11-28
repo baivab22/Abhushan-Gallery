@@ -200,7 +200,7 @@ const cases = [
   ["https://l.facebook.com/l.php?u=123", "Facebook"],
   ["https://www.facebook.com/", "Facebook"],
   ["https://www.instagram.com/p/abc/", "Instagram"],
-  ["https://wa.me/9779812345678", "WhatsApp"],
+  ["https://wa.me/9779768620644", "WhatsApp"],
   ["https://www.youtube.com/watch?v=x", "YouTube"],
   ["https://t.me/channel", "Other"],
   ["https://abhushangallery.com/product/1", "Internal"],

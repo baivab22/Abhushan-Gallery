@@ -48,8 +48,13 @@ const queueProductForIndexing = async (productId, { reason = 'product change', f
       },
       { new: true }
     )
-    if (existing) return existing
-    return newJob({ type: 'product', queue: [productId], force, reason })
+    if (existing) {
+      kickIndexer()
+      return existing
+    }
+    const job = await newJob({ type: 'product', queue: [productId], force, reason })
+    kickIndexer()
+    return job
   } catch (error) {
     console.error('[visual-search] could not queue product:', error.message)
     return null
@@ -271,6 +276,26 @@ const runSweep = async () => {
   } finally {
     sweepRunning = false
   }
+}
+
+let kickScheduled = false
+
+/**
+ * Start a sweep on the next tick so a product added from the dashboard is
+ * indexed right away instead of waiting for the next worker poll. The timer in
+ * the worker stays as the fallback for queued jobs and post-restart recovery.
+ */
+const kickIndexer = () => {
+  if (kickScheduled) return
+  kickScheduled = true
+  setImmediate(async () => {
+    kickScheduled = false
+    try {
+      await runSweep()
+    } catch (error) {
+      console.error('[visual-search] indexing kick failed:', error.message)
+    }
+  })
 }
 
 const getCatalogStats = async () => {
@@ -564,6 +589,7 @@ module.exports = {
   cancelIndexing,
   removeProductFromIndex,
   runSweep,
+  kickIndexer,
   recoverStaleJobs,
   getJobStatus,
   getCatalogStats,

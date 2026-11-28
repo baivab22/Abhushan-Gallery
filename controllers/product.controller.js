@@ -57,6 +57,32 @@ const parseColorNames = (body) => {
   return names.map((name) => String(name).trim()).filter(Boolean);
 };
 
+// Sizes are an optional list of "options" for a product, not a stock count.
+// The dashboard posts a JSON array, but a repeated `sizes`/`size` field (or a
+// comma separated string) is accepted too. Everything is normalised to strings
+// so numeric sizes such as 42 and "42" are treated as the same option.
+const parseSizes = (body) => {
+  const raw = body.sizes !== undefined ? body.sizes : body.size;
+  if (raw === undefined || raw === null || raw === "") return [];
+
+  let values = parseBodyArray(raw);
+  if (values.length === 1 && typeof values[0] === "string" && values[0].trim().startsWith("[")) {
+    try {
+      const parsed = JSON.parse(values[0]);
+      if (Array.isArray(parsed)) values = parsed;
+    } catch (error) {
+      // Not JSON — fall through and treat it as a plain size value.
+    }
+  }
+
+  const normalized = values
+    .flatMap((value) => String(value ?? "").split(","))
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  return Array.from(new Set(normalized));
+};
+
 const groupUploadedColorFilesByColorName = (body, colorImages) => {
   const colorNames = parseColorNames(body);
   const grouped = {};
@@ -235,6 +261,7 @@ exports.createProduct = async (req, res, next) => {
         price: price,
         stockQuantity: stockQuantity,
         images: images,
+        sizes: parseSizes(req.body),
         video: videoFilename,
         originalPrice: originalPrice,
         discountedPrice: discountedPrice,
@@ -1425,6 +1452,10 @@ exports.updateProduct = async (req, res, next) => {
         : product.stockQuantity;
     product.images = images;
     product.markModified("images");
+    if (req.body.sizes !== undefined || req.body.size !== undefined) {
+      product.sizes = parseSizes(req.body);
+      product.markModified("sizes");
+    }
     product.video = videoFilename;
     product.originalPrice =
       req.body.originalPrice !== undefined

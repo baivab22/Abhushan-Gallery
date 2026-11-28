@@ -834,7 +834,7 @@ exports.forgotPassword = async (req, res) => {
             <p>If you did not request this, you can safely ignore this email.</p>
           `,
           footerNote: "For your security, this link expires automatically.",
-          contactPhone: "9861698400",
+          contactPhone: "9768620644",
           contactEmail: EMAIL_CONFIG.sender,
         }),
         attachments: getLogoAttachment(),

@@ -33,7 +33,7 @@ const buildEmailShell = ({
   subtitle = '',
   bodyHtml,
   footerNote = 'This is an automated message. Please do not reply to this email.',
-  contactPhone = '9861698400',
+  contactPhone = '9768620644',
   contactEmail = '',
 }) => `
 <!DOCTYPE html>

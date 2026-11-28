@@ -33,7 +33,7 @@ const {
     fullName: 'Baivab Bidari',
     shippingLocation: longAddress,
     locationAddress: '',
-    phoneNumber: '+977 9861698400',
+    phoneNumber: '+977 9768620644',
     products: [
       { productId: { name: longProductName }, colorName: 'Gold Polish', quantity: 1, price: 600 },
       { productId: { name: 'Traditional Tikma Necklace Set With Lapis Lazuli Beads' }, colorName: 'Oxidised Silver', quantity: 2, price: 10000 },

@@ -91,7 +91,7 @@ const emailMarketingService = {
                 subtitle: 'Latest updates curated for you',
                 bodyHtml: marketingBody,
                 footerNote: 'You are receiving this message because you subscribed to updates.',
-                contactPhone: '9861698400',
+                contactPhone: '9768620644',
                 contactEmail: EMAIL_CONFIG.sender,
               }),
               text: previewText || subject,

@@ -134,7 +134,10 @@ const extractInvoiceData = ({ order, customerEmail, customerName, senderEmail, t
     const unitPrice = qty > 0 ? lineTotal / qty : lineTotal;
     return {
       name: p?.productId?.name || 'Product',
-      color: p?.colorName || '',
+      // The PDF renders `color` inline after the product name; including the
+      // chosen size here keeps every invoice variant visible without changing
+      // the layout.
+      color: [p?.colorName, p?.size ? `Size ${p.size}` : ''].filter(Boolean).join(' · '),
       quantity: qty,
       unitPrice,
       amount: lineTotal,
@@ -184,7 +187,7 @@ const extractInvoiceData = ({ order, customerEmail, customerName, senderEmail, t
     seller: {
       name: 'Abhushan Gallery',
       address: 'Kalimati, Kathmandu, Nepal',
-      phone: '+977 9861698400',
+      phone: '+977 9768620644',
       email: senderEmail || 'support@aabhushangallery.com',
     },
     customer: {

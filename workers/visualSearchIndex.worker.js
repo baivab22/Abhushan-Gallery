@@ -20,6 +20,8 @@ const startVisualSearchIndexWorker = () => {
   indexer.recoverStaleJobs().catch((error) => {
     console.error('[visual-search] stale job recovery failed:', error.message)
   })
+  // Pick up anything queued before the process restarted without waiting a full poll.
+  indexer.kickIndexer()
 
   const timer = setInterval(() => {
     indexer.runSweep().catch((error) => {
